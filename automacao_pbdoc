@@ -46,7 +46,7 @@ spreadsheet_id = '1hhhyh67dObKoz_Yde2P1NU3p8D1b4mtQrfadHZDX3GI'  # Adicione aqui
 nome_aba_desejada = "SALA DE ARTE"
 
 # Caminho base para arquivos
-BASE_PATH = 'C:/Users/Aluno/Documents/Lucas/SALA DE ARTE/PROPONENTES'
+BASE_PATH = 'C:/Users/PC/Documents/AUTO_PBDOC/PROPONENTES'
 
 # Texto padrão do ofício
 TEXTO_OFICIO = """Senhor Coordenador,
