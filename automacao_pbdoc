@@ -1,0 +1,391 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import time
+import gspread
+from google.oauth2.service_account import Credentials
+import os
+import re
+import unicodedata
+
+def normalizar_nome(nome):
+    """
+    Normaliza o nome para comparação:
+    - Remove espaços extras
+    - Converte para minúsculas
+    - Remove acentos
+    - Remove caracteres especiais
+    """
+    # Remove espaços extras e converte para minúsculas
+    nome = ' '.join(nome.strip().lower().split())
+    
+    # Remove acentos
+    nome = unicodedata.normalize('NFKD', nome).encode('ASCII', 'ignore').decode('ASCII')
+    
+    # Remove caracteres especiais, mantendo apenas letras, números e espaços
+    nome = re.sub(r'[^a-z0-9\s]', '', nome)
+    
+    return nome
+
+# Configurações gerais
+TIMEOUT = 20  # Tempo máximo de espera em segundos
+
+# Configurações de login
+USERNAME = 'SCT106605'
+PASSWORD = 'R5m1Jx5w'
+
+# Função para ordenação numérica natural
+def natural_sort_key(s):
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
+
+# Configurações do Google Sheets
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+credentials_file = 'src/config/credentials.json'
+spreadsheet_id = '1hhhyh67dObKoz_Yde2P1NU3p8D1b4mtQrfadHZDX3GI'  # Adicione aqui o novo ID da planilha
+nome_aba_desejada = "SALA DE ARTE"
+
+# Caminho base para arquivos
+BASE_PATH = 'C:/Users/Aluno/Documents/Lucas/SALA DE ARTE/PROPONENTES'
+
+# Texto padrão do ofício
+TEXTO_OFICIO = """Senhor Coordenador,
+
+Conforme a publicação do resultado no Diário Oficial do Estado, em 31 de janeiro de 2025, referente ao edital do programa Sala de Arte, realizado pela Secretaria de Estado da Cultura da Paraíba, por meio do Fundo de Incentivo à Cultura Augusto dos Anjos, em conformidade com o inciso III do art. 5º e os artigos 7º e 12 da Lei nº 14.399, de 8 de julho de 2022, que institui a Política Nacional Aldir Blanc de Fomento à Cultura, venho por meio deste solicitar autorização para o pagamento mensal da bolsa conforme especificado a seguir.
+
+O referido edital tem como objetivo a oferta de formação de curta duração em arte e cultura, a ser ministrada em escolas da rede estadual de ensino pelo período de cinco meses, ao longo do primeiro semestre de 2025.
+
+Dessa forma, solicito a autorização para o pagamento mensal da bolsa em nome de {nome_proponente}, inscrito no CPF: {cpf_proponente}, no valor de R$ 2.000,00 (dois mil reais), durante cinco meses, Totaliza R$ 10.000,00 (dez mil reais).
+O(a) bolsista é residente na cidade de {cidade_proponente}, pertencente à 1ª Regional de Cultura.
+
+Atenciosamente,"""
+
+def verificar_sucesso_operacao(driver, mensagem):
+    """Função auxiliar para verificar sucesso das operações"""
+    try:
+        WebDriverWait(driver, TIMEOUT).until(
+            EC.presence_of_element_located((By.XPATH, '//div[contains(@class, "alert-success")]'))
+        )
+        print(f"✓ {mensagem}")
+        return True
+    except Exception as e:
+        print(f"⚠ Aviso: Não foi possível confirmar o sucesso da operação - {mensagem}")
+        return False
+
+# Autenticação e conexão com o Google Sheets
+try:
+    creds = Credentials.from_service_account_file(credentials_file, scopes=SCOPES)
+    client = gspread.authorize(creds)
+    print("✓ Conexão com Google Sheets estabelecida")
+    
+    # Abrir a planilha e obter todas as linhas
+    spreadsheet = client.open_by_key(spreadsheet_id)
+    sheet = spreadsheet.worksheet(nome_aba_desejada)
+    todas_linhas = sheet.get_all_values()
+    print(f"✓ Planilha aberta - {len(todas_linhas)} linhas encontradas")
+    
+    # Verificar estrutura dos dados
+    print("\nVerificando estrutura da planilha:")
+    print(f"Total de linhas: {len(todas_linhas)}")
+    if len(todas_linhas) > 0:
+        print(f"Colunas na primeira linha: {len(todas_linhas[0])}")
+        print("Cabeçalho da planilha:", todas_linhas[0])
+
+except Exception as e:
+    print(f"❌ Erro ao conectar com Google Sheets: {e}")
+    raise
+
+try:
+    # Inicializa o driver do navegador
+    print("Iniciando o navegador...")
+    driver = webdriver.Chrome()
+    driver.get('https://pbdoc.pb.gov.br/siga/public/app/login')
+
+    # Realiza o login
+    print("Realizando login...")
+    WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="username"]'))).send_keys(USERNAME)
+    WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="password"]'))).send_keys(PASSWORD)
+    WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="formLogin"]/div[3]/div/div/button'))).click()
+    print("Login realizado com sucesso!")
+
+    for linha in range(2, len(todas_linhas) + 1):
+        try:
+            print(f"\nProcessando linha {linha}...")
+            dados = sheet.row_values(linha)
+            
+            # Debug: mostrar dados da linha
+            print(f"Dados encontrados: {dados}")
+            
+            # Verificar se a linha tem dados suficientes
+            if len(dados) < 18:  # precisamos de pelo menos 18 colunas
+                print(f"Linha {linha} não tem dados suficientes. Pulando...")
+                continue
+            
+            # Verificar se a linha está vazia ou já foi processada
+            if not dados or not dados[3].strip():  # coluna D - NOME COMPLETO DO(A) PROPONENTE
+                print(f"Linha {linha} vazia. Pulando...")
+                continue
+                
+            if len(dados) > 35 and dados[35].strip():
+                print(f"Linha {linha} já foi processada. Pulando...")
+                continue
+                
+            # Verificar se o proponente já tem processo aberto na coluna T
+            if len(dados) > 19 and dados[19].strip():  # coluna T é índice 20
+                print(f"Proponente {dados[3].strip()} já tem processo aberto. Pulando...")
+                continue
+            
+            nome_proponente = dados[3].strip()    # coluna D - NOME COMPLETO DO(A) PROPONENTE
+            cpf_proponente = dados[4].strip()     # coluna E - CPF
+            cidade_proponente = dados[10].strip()  # coluna K - CIDADE
+            
+            print(f"Processando proponente:")
+            print(f"Nome: {nome_proponente}")
+            print(f"CPF: {cpf_proponente}")
+            print(f"Cidade: {cidade_proponente}")
+
+            # Verificar se a pasta correspondente existe
+            caminho_pasta = os.path.join(BASE_PATH, nome_proponente)  # Caminho da pasta
+
+            if not os.path.exists(caminho_pasta):
+                print(f"Pasta não encontrada: {caminho_pasta}")
+                print("Procurando por nomes similares...")
+                
+                # Lista todas as pastas no diretório base
+                pastas = os.listdir(BASE_PATH)
+                
+                # Procura por uma pasta que corresponda ao nome normalizado
+                for pasta in pastas:
+                    if normalizar_nome(pasta) == normalizar_nome(nome_proponente):
+                        caminho_pasta = os.path.join(BASE_PATH, pasta)
+                        print(f"Pasta encontrada com nome similar: {pasta}")
+                        break
+
+            if os.path.exists(caminho_pasta):
+                # Criar Processo Administrativo
+                print("Criando processo administrativo...")
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="inicio"]/div[3]/a'))).click()
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="dropdownMenuButton"]/span'))).click()
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="modelos-select"]/div/ul/li[6]/a/small'))).click()
+
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="formulario_exDocumentoDTO.lotacaoDestinatarioSel_sigla"]'))).send_keys('SCT-PNAB')
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="formulario_exDocumentoDTO.classificacaoSel_sigla"]'))).send_keys('03.05.01.18')
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="descrDocumento"]'))).send_keys(f'SOLICITAÇÃO DE PAGAMENTO DE BOLSA PARA "{nome_proponente}" - PROGRAMA SALA DE ARTE - PNAB.')
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="frm"]/div[11]/div/button[2]'))).click()
+                print("Processo administrativo criado com sucesso!")
+
+                # Desmarcar "Tramitar" e assinar o processo administrativo
+                print("Assinando processo administrativo...")
+                tramitar_checkbox = WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="ad_tramitar_0"]')))
+                if tramitar_checkbox.is_selected():
+                    tramitar_checkbox.click()
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="bot-assinar"]'))).click()
+                
+                # Adicionar assinatura do processo administrativo
+                campo_usuario = WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="nomeUsuarioSubscritor"]')))
+                campo_usuario.clear()
+                campo_usuario.send_keys('SCT106605')
+                campo_senha = WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="senhaUsuarioSubscritor"]')))
+                campo_senha.clear()
+                campo_senha.send_keys('R5m1Jx5w')
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="senhaOk"]'))).click()
+                print("Processo administrativo assinado com sucesso!")
+
+                # Capturar número do processo administrativo
+                print("Capturando número do processo administrativo...")
+                numero_processo = WebDriverWait(driver, TIMEOUT).until(
+                    EC.presence_of_element_located((By.XPATH, '//*[@id="page"]/div[1]/div/h2'))
+                ).text.split(' #')[0]
+                print(f"Número do processo capturado: {numero_processo}")
+
+                # Criar o ofício com o novo texto
+                print("Criando ofício...")
+                # Aumentar o tempo de espera para garantir que o processo anterior foi concluído
+                time.sleep(5)  # Aumentar o tempo de espera
+                
+                # Clicar no logo do PBdoc para voltar à página inicial
+                logo = WebDriverWait(driver, TIMEOUT).until(
+                    EC.presence_of_element_located((By.XPATH, '/html/body/nav/a/img'))
+                )
+                driver.execute_script("arguments[0].click();", logo)
+                
+                # Continua com a criação do ofício
+                print("Aguardando a página do ofício carregar...")
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="inicio"]/div[3]/a'))).click()
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="formulario_exDocumentoDTO.lotacaoDestinatarioSel_sigla"]'))).send_keys('SCT-PNAB')
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="descrDocumento"]'))).send_keys(f'SOLICITAÇÃO DE PAGAMENTO DE BOLSA PARA "{nome_proponente}" - PROGRAMA SALA DE ARTE - PNAB.')
+
+                # Preencher o corpo do texto do ofício usando o template
+                texto_body = TEXTO_OFICIO.format(
+                    nome_proponente=nome_proponente,
+                    cpf_proponente=cpf_proponente,
+                    cidade_proponente=cidade_proponente
+                )
+
+                print("Aguardando o campo de texto do ofício...")
+                driver.switch_to.frame(driver.find_element(By.XPATH, '//*[@id="cke_1_contents"]/iframe'))
+                driver.find_element(By.XPATH, '/html/body/p').send_keys(texto_body)
+                driver.switch_to.default_content()
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="frm"]/div[11]/div/button[2]'))).click()
+                print("Campos preenchidos e ofício enviado para assinatura.")
+
+                # Desmarcar "Tramitar" e assinar o ofício
+                print("Desmarcando a opção 'Tramitar'...")
+                tramitar_checkbox = WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="ad_tramitar_0"]')))
+                if tramitar_checkbox.is_selected():
+                    tramitar_checkbox.click()
+                    print("Opção 'Tramitar' desmarcada.")
+
+                # Realizar a assinatura do ofício
+                print("Realizando assinatura do ofício...")
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="bot-assinar"]'))).click()
+                campo_usuario = WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="nomeUsuarioSubscritor"]')))
+                campo_usuario.clear()
+                campo_usuario.send_keys('SCT106605')
+                campo_senha = WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="senhaUsuarioSubscritor"]')))
+                campo_senha.clear()
+                campo_senha.send_keys('R5m1Jx5w')
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="senhaOk"]'))).click()
+                print("Ofício assinado com sucesso!")
+
+                # Captura número do documento (remover ou comentar esse trecho)
+                print("Capturando número do documento...")
+                numero_oficio = WebDriverWait(driver, TIMEOUT).until(
+                    EC.presence_of_element_located((By.XPATH, '//*[@id="page"]/div[1]/div/h2'))
+                ).text.split(' #')[0]
+                # Remover esta linha que salva na coluna errada
+                # sheet.update_cell(linha, 36, numero_oficio)
+                print(f"Número do ofício capturado: {numero_oficio}")
+
+                # Juntar o ofício ao processo
+                print("Juntando o ofício ao processo administrativo...")
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="juntar"]'))).click()
+                campo_processo = WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="formulario_documentoRefSel_sigla"]')))
+                campo_processo.send_keys(numero_processo)  # Usa o número do processo que capturamos anteriormente
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="documentoRefSelSpan"]'))).click()
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '/html/body/div[4]/div/div[2]/form/div[2]/div/button'))).click()
+                print("Ofício juntado ao processo administrativo com sucesso!")
+
+                # Selecionar o processo administrativo na lista à direita
+                print("Selecionando o processo administrativo...")
+                elemento_processo = WebDriverWait(driver, 20).until(
+                    EC.element_to_be_clickable((By.XPATH, '//*[@id="page"]/div[3]/div[1]/div/div[2]/table/tbody/tr/td[4]'))
+                )
+                elemento_processo.click()
+                print("Página do processo administrativo aberta")
+
+                # Anexar documentos
+                print("Anexando documentos...")
+                # Verificar se a pasta correspondente existe
+                caminho_pasta = os.path.join(BASE_PATH, nome_proponente)  # Caminho da pasta
+
+                if not os.path.exists(caminho_pasta):
+                    print(f"Pasta não encontrada: {caminho_pasta}")
+                    print("Procurando por nomes similares...")
+                    
+                    # Lista todas as pastas no diretório base
+                    pastas = os.listdir(BASE_PATH)
+                    
+                    # Procura por uma pasta que corresponda ao nome normalizado
+                    for pasta in pastas:
+                        if normalizar_nome(pasta) == normalizar_nome(nome_proponente):
+                            caminho_pasta = os.path.join(BASE_PATH, pasta)
+                            print(f"Pasta encontrada com nome similar: {pasta}")
+                            break
+
+                if os.path.exists(caminho_pasta):
+                    # Clique no botão "Anexar"
+                    print("Clicando no botão 'Anexar'...")
+                    botao_anexar = WebDriverWait(driver, 20).until(
+                        EC.element_to_be_clickable((By.XPATH, '//*[@id="anexar"]'))
+                    )
+                    botao_anexar.click()
+                    print("Botão 'Anexar' clicado com sucesso.")
+
+                    # Anexar arquivos
+                    print("Anexando arquivos...")
+                    arquivos = sorted(os.listdir(caminho_pasta), key=natural_sort_key)
+                    for arquivo in arquivos:
+                        arquivo_para_anexar = os.path.join(caminho_pasta, arquivo)
+                        print(f"Anexando arquivo: {arquivo_para_anexar}")  # Verificar o caminho do arquivo
+                        
+                        # Esperar o campo de arquivo aparecer
+                        campo_arquivo = WebDriverWait(driver, TIMEOUT).until(
+                            EC.presence_of_element_located((By.XPATH, '//*[@id="arquivo"]'))
+                        )
+                        campo_arquivo.send_keys(arquivo_para_anexar)
+                        
+                        # Clicar no botão de confirmação
+                        print("Clicando no botão de confirmação...")
+                        WebDriverWait(driver, TIMEOUT).until(
+                            EC.element_to_be_clickable((By.XPATH, '/html/body/div[5]/div[1]/div[2]/form/div[5]/div/input[1]'))
+                        ).click()
+                        
+                        time.sleep(3)  # Aumentar o tempo de espera após o upload
+                    print("Todos os arquivos foram anexados com sucesso!")
+                else:
+                    print(f"Nenhuma pasta correspondente encontrada para {nome_proponente}.")
+                    continue  # Pula para a próxima linha
+
+                # Assinar os documentos anexados
+                print("Assinando documentos anexados...")
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="bot-assinar"]'))).click()
+                campo_usuario = WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="nomeUsuarioSubscritor"]')))
+                campo_usuario.clear()
+                campo_usuario.send_keys('SCT106605')
+                campo_senha = WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="senhaUsuarioSubscritor"]')))
+                campo_senha.clear()
+                campo_senha.send_keys('R5m1Jx5w')
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="senhaOk"]'))).click()
+
+                # Tramitar o processo
+                print("Tramitando processo...")
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="tramitar"]'))).click()
+                campo_tramitar = WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="formulario_lotaResponsavelSel_sigla"]')))
+                campo_tramitar.clear()
+                campo_tramitar.send_keys('GEFEC')
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="lotaResponsavelSelSpan"]'))).click()
+                campo_tramitar.send_keys(u'\ue007')
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="button_ok"]'))).click()
+                print("Processo finalizado com sucesso!")
+
+                # Após salvar o número do processo na planilha
+                print("Salvando número do processo na planilha...")
+                sheet.update_cell(linha, 20, numero_processo)
+                print(f"Número do processo {numero_processo} salvo na planilha")
+
+                # Fechar o navegador após concluir o processo
+                driver.quit()
+                print("Navegador fechado. Iniciando o próximo proponente...")
+
+                # Aumentar o tempo de espera antes de reiniciar o navegador
+                time.sleep(5)  # Aumentar o tempo de espera entre processos
+
+                # Reiniciar o navegador para o próximo proponente
+                driver = webdriver.Chrome()
+                driver.get('https://pbdoc.pb.gov.br/siga/public/app/login')
+
+                # Realiza o login novamente
+                print("Realizando login...")
+                WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="username"]'))).send_keys(USERNAME)
+                WebDriverWait(driver, TIMEOUT).until(EC.presence_of_element_located((By.XPATH, '//*[@id="password"]'))).send_keys(PASSWORD)
+                WebDriverWait(driver, TIMEOUT).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="formLogin"]/div[3]/div/div/button'))).click()
+                print("Login realizado com sucesso!")
+
+        except Exception as e:
+            print(f"\nErro ao processar linha {linha}: {e}")
+            print("Detalhes do erro:", str(e))
+            resposta = input('Deseja continuar para a próxima linha? (s/n): ').lower()
+            if resposta != 's':
+                print('\nProcesso interrompido pelo usuário.')
+                break
+            print("Voltando para a página inicial...")
+            driver.get('https://pbdoc.pb.gov.br/siga/public/app/principal')
+            continue
+
+except Exception as e:
+    print(f"Erro ao processar o processo: {e}")
+
+finally:
+    if driver:
+        driver.quit() 
